@@ -1,10 +1,3 @@
-# -*- coding: utf-8 -*-
-"""
-AI 기반 폐업 조기경보 플랫폼 (Streamlit)
-- Overview / Risk Map / Store Explorer / AI Policy Lab
-- 쉬운 해석 캡션 + 'AI 설명 켜기' 토글(Gemini) + 프롬프트/응답 로깅(JSONL)
-"""
-
 from __future__ import annotations
 from pathlib import Path
 import io, os, json, datetime, textwrap
@@ -13,6 +6,7 @@ import pandas as pd
 import streamlit as st
 import plotly.express as px
 import plotly.graph_objects as go
+import requests  # ← 원격(Drive) 파일 로드를 위해 추가
 
 # (선택) Gemini
 try:
@@ -22,7 +16,6 @@ except Exception:
     _HAS_GEMINI = False
 
 try:
-    # Streamlit 버전에 따라 모듈 경로가 다를 수 있어 optional
     from streamlit.runtime.secrets import StreamlitSecretNotFoundError
 except Exception:
     class StreamlitSecretNotFoundError(Exception):
@@ -42,7 +35,7 @@ FILE_MAPCSV = OUT / "big_data_set1_f.csv"
 FILE_ALERTS = OUT / "signals_alerts_delta.csv"
 FILE_SIGREC = OUT / "signals_recent_delta.csv"
 
-POLICY_XLSX = OUT / "정책지원관련매핑_251022.xlsx"   # ← 사용자가 넣어둔 엑셀
+POLICY_XLSX = OUT / "정책지원관련매핑_251022.xlsx"
 LOG_DIR = OUT / "ai_logs"
 LOG_DIR.mkdir(parents=True, exist_ok=True)
 LOG_PATH = LOG_DIR / "ai_explanation_log.jsonl"
@@ -1061,3 +1054,4 @@ with t_policy:
             show_cards(policy_map[policy_map["support_type"].isin(
                 ["sourcing","procurement","costdown","rent"]
             )])
+
