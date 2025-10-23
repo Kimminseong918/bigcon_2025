@@ -1,7 +1,7 @@
 # -*- coding: utf-8 -*-
 from __future__ import annotations
 from pathlib import Path
-import io, os, json, datetime, textwrap, re
+import io, os, json, datetime, textwrap, re  # ← re 추가
 import numpy as np
 import pandas as pd
 import streamlit as st
@@ -29,21 +29,26 @@ OUT = ROOT / "outputs"
 OUT.mkdir(parents=True, exist_ok=True)  # outputs 폴더 보장
 
 # -------------------- Google Drive URL (secrets 우선, fallback 존재) --------------------
+# secrets.toml이 있으면 우선 사용, 없으면 기본값 사용
 try:
     PREDICTIONS_URL       = st.secrets["PREDICTIONS_URL"]
     PREDICTIONS_NAMED_URL = st.secrets["PREDICTIONS_NAMED_URL"]
     MERGED_URL            = st.secrets["MERGED_URL"]
-    ALERTS_URL            = st.secrets["ALERTS_URL"]
+    ALERTS_URL            = st.secrets["ALERTS_URL"]        # signals_alerts_delta.csv
+    SIGREC_URL            = st.secrets.get("SIGREC_URL", "")  # (선택) signals_recent_delta.csv
 except Exception:
-    # secrets 없을 때 기본값(드라이브 공유 링크 → uc?id=…&export=download)
     PREDICTIONS_URL       = "https://drive.google.com/uc?id=1qInDALlRx25MlShIL4yT4GTiqO-qmSWd&export=download"
     PREDICTIONS_NAMED_URL = "https://drive.google.com/uc?id=1oDGLLAtPhvweruKWq2x9DTHC_LSyLG34&export=download"
     MERGED_URL            = "https://drive.google.com/uc?id=1-iPvmfHz3mjhRe95XEoB17Ja0S_zulJm&export=download"
+    # ✅ 사용자가 주신 alerts 드라이브 링크
     ALERTS_URL            = "https://drive.google.com/uc?id=1_WdKGUzAK1xaXlxTbpkCfDpyonYQGWBx&export=download"
+    SIGREC_URL            = ""  # 없으면 비워두기
 
 # -------------------- 공통: Google Drive에서 파일 다운로드 --------------------
 def _extract_gdrive_id(url_or_id: str) -> str | None:
     """id=… 또는 /d/…/ 형태 모두에서 파일ID 추출"""
+    if not url_or_id:
+        return None
     if "/" not in url_or_id:  # 이미 id만 온 경우
         return url_or_id
     m = re.search(r"(?:id=|/d/)([A-Za-z0-9_-]{20,})", url_or_id)
@@ -69,14 +74,17 @@ def _download_from_gdrive(url_or_id: str, out_path: Path) -> bool:
         return False
 
 def ensure_outputs_files(out_dir: Path) -> None:
-    """필요 파일 없으면 Drive에서 자동 다운로드"""
+    """필요 파일 없으면 Drive에서 자동 다운로드 (URL이 비었으면 건너뜀)"""
     targets = {
         "predictions_latest_both_delta.parquet":       PREDICTIONS_URL,
         "predictions_latest_both_delta_named.parquet": PREDICTIONS_NAMED_URL,
         "merged_indices_monthly.parquet":              MERGED_URL,
         "signals_alerts_delta.csv":                    ALERTS_URL,
+        "signals_recent_delta.csv":                    SIGREC_URL,  # 선택
     }
     for fname, url in targets.items():
+        if not url:
+            continue
         p = out_dir / fname
         if not p.exists() or p.stat().st_size == 0:
             _download_from_gdrive(url, p)
@@ -95,7 +103,6 @@ POLICY_XLSX = OUT / "정책지원관련매핑_251022.xlsx"  # (선택)
 
 LOG_DIR = OUT / "ai_logs"; LOG_DIR.mkdir(parents=True, exist_ok=True)
 LOG_PATH = LOG_DIR / "ai_explanation_log.jsonl"
-
 
 # -------------------- UI/스타일 --------------------
 st.set_page_config(page_title="AI 기반 폐업 조기경보 플랫폼", layout="wide")
@@ -118,8 +125,10 @@ st.caption("AI 기반 폐업위험 예측 및 맞춤형 지원 시스템")
 # -------------------- 로딩 유틸 --------------------
 def _try_read_csv(path: Path) -> pd.DataFrame:
     for enc in ("cp949", "euc-kr", "utf-8"):
-        try: return pd.read_csv(path, encoding=enc)
-        except Exception: pass
+        try:
+            return pd.read_csv(path, encoding=enc)
+        except Exception:
+            pass
     try:
         txt = path.read_bytes().decode("utf-8", errors="replace")
         return pd.read_csv(io.StringIO(txt))
@@ -129,7 +138,8 @@ def _try_read_csv(path: Path) -> pd.DataFrame:
 @st.cache_data(show_spinner=False)
 def load_pred() -> pd.DataFrame:
     p = FILE_PRED
-    if p.suffix.lower()==".parquet": return pd.read_parquet(p)
+    if p.suffix.lower()==".parquet":
+        return pd.read_parquet(p)
     return _try_read_csv(p)
 
 @st.cache_data(show_spinner=False)
@@ -218,6 +228,7 @@ alerts = load_alerts(); sigrec  = load_sigrec(); policy_map = load_policy_map()
 for _df in (pred, merged, alerts, sigrec):
     if not _df.empty: _ensure_datetime(_df, "month")
 
+# 표준 키/이름 매핑
 if "store_id" in pred.columns: pred["store_id"] = pred["store_id"].astype(str)
 if "ENCODED_MCT" not in pred.columns and "store_id" in pred.columns:
     pred["ENCODED_MCT"] = pred["store_id"]
@@ -236,11 +247,11 @@ def latest_per_store(df: pd.DataFrame) -> pd.DataFrame:
     idx = df.groupby("store_id", observed=False)["month"].idxmax()
     return df.loc[idx].copy()
 
-def pct(n, d): 
+def pct(n, d):
     try: return f"{100*n/d:.1f}%"
     except Exception: return "N/A"
 
-def num(x): 
+def num(x):
     try: return f"{int(x):,}"
     except Exception: return "0"
 
@@ -267,7 +278,7 @@ def _describe_ts(months: pd.Series, values: pd.Series, scope_label: str) -> str:
         idx_max, idx_min = int(v.argmax()), int(v.argmin())
         m_max, v_max = m.iloc[idx_max], float(v.iloc[idx_max]); m_min, v_min = m.iloc[idx_min], float(v.iloc[idx_min])
         def p(x): return f"{x*100:.1f}%"
-        def sign_txt(x): 
+        def sign_txt(x):
             return f"상승(+{p(x)})" if x>0.0001 else (f"하락({p(x)})" if x<-0.0001 else "큰 변화 없음(±0.0%p)")
         return "".join([
             f"<div class='caption-note'><b>그래프 요약</b> — {scope_label}</div>",
@@ -280,7 +291,7 @@ def _describe_ts(months: pd.Series, values: pd.Series, scope_label: str) -> str:
     except Exception:
         return f"<div class='caption-note'>· {scope_label}: 해석 생성 중 오류가 발생했습니다.</div>"
 
-# === 여기서 이름 변경/고정: build_ai_prompt (기존 _build_ai_context 대체) ===
+# === build_ai_prompt ===
 def build_ai_prompt(store_name: str, store_id: str, district: str, category: str,
                     top_groups: list[str], reasons: list[str], score_now: float,
                     extra_metrics: dict) -> str:
@@ -345,7 +356,7 @@ def _pick_gemini_model() -> str:
         "models/gemini-1.5-pro","models/gemini-1.0-pro",
     ]
     avail = _list_models_safe()
-    def ok(ms): 
+    def ok(ms):
         s={str(x).lower() for x in (ms or set())}
         return any(k in s for k in ("generatecontent","generate_content"))
     text_models=[n for (n,ms) in avail if n and ok(ms)]
@@ -432,7 +443,7 @@ with t_map:
                 opacity=0.68, height=680,
                 title=("행정동별 평균 3개월 위험도" if val_col=="risk_proba_3m" else "행정동별 평균 6개월 위험도"),
             )
-            fig.update_traces(hovertemplate="<b>행정동:</b> %{location}<br>" + 
+            fig.update_traces(hovertemplate="<b>행정동:</b> %{location}<br>" +
                               ("<b>3개월 위험도:</b> %{z:.1%}" if val_col=="risk_proba_3m" else "<b>6개월 위험도:</b> %{z:.1%}") + "<extra></extra>")
             fig.update_layout(
                 hoverlabel=dict(bgcolor="rgba(255,255,255,0.96)", font_size=16, font_color="black", font_family="Arial"),
@@ -464,7 +475,7 @@ with t_store:
 
     name_col = "MCT_NM_mask" if "MCT_NM_mask" in cand_latest.columns else ("MCT_NM" if "MCT_NM" in cand_latest.columns else None)
     if not name_col: cand_latest["__tmp_name__"] = cand_latest["store_id"].astype(str); name_col = "__tmp_name__"
-    def _fmt_label(r): 
+    def _fmt_label(r):
         nm = str(r.get(name_col,"")).strip(); dong = str(r.get("district","")).strip()
         base = nm if nm else str(r.get("store_id","")); return f"{base} · {dong}" if dong else base
     opts = cand_latest[["store_id","district",name_col]].copy(); opts["__label"] = opts.apply(_fmt_label, axis=1)
@@ -529,6 +540,7 @@ with t_store:
     else:
         st.markdown("<span class='small'>그룹 기여 정보가 없어 생략합니다.</span>", unsafe_allow_html=True)
 
+    # ---- 경고 사유 bullets 생성
     bullets: list[str] = []
     if not alerts.empty and {"store_id","month"}.issubset(alerts.columns):
         a = alerts.copy(); a["store_id"] = a["store_id"].astype(str).str.strip(); a = a[a["store_id"]==sel_id_str]
@@ -537,6 +549,7 @@ with t_store:
             for k in ["reason_1","reason_2","reason_3"]:
                 txt = str(row.get(k,"")).strip()
                 if txt: bullets.append(f"- {txt}")
+
     if not bullets and (not sigrec.empty) and {"store_id","month"}.issubset(sigrec.columns):
         s = sigrec.copy(); s["store_id"]=s["store_id"].astype(str).str.strip(); s = s[s["store_id"]==sel_id_str].sort_values("month")
         if not s.empty:
@@ -564,8 +577,28 @@ with t_store:
                        f"{lab} 상승(최근 3개월 Δ {d:+.2f}), 행정동·업종 동월 평균 대비 {g:+.2f}%p")
                 bullets.append(f"- {txt}")
 
+    # ✅ 폴백: alerts/sigrec 둘 다 없을 때도 자동 생성
+    used_fallback = False
+    if not bullets:
+        if contrib_cols:
+            gl = _kdict()
+            lastc = sdf.iloc[-1:][contrib_cols].T; lastc.columns = ["val"]
+            lastc["group"] = lastc.index.str.replace("contrib_","",regex=False).str.replace("_3m","",regex=False)
+            top = (lastc.sort_values("val", ascending=False).head(3)["group"].map(lambda g: gl.get(g, g)).tolist())
+            bullets = [f"- {g} 관련 지표가 최근월에 높은 영향" for g in top]
+            used_fallback = True
+        else:
+            sdf_local = sdf[["month","risk_proba_3m"]].dropna()
+            if len(sdf_local) >= 2:
+                ch = float(sdf_local["risk_proba_3m"].iloc[-1] - sdf_local["risk_proba_3m"].iloc[-2])
+                bullets = [f"- 최근 1개월 위험확률 변화: {ch*100:+.1f}%p"]
+                used_fallback = True
+
     if bullets:
-        st.markdown("**📌 체크 포인트**"); st.markdown("\n".join(bullets))
+        st.markdown("**📌 체크 포인트**")
+        if used_fallback:
+            st.caption("파일이 없거나 비어 있어 자동 생성된 요약입니다.")
+        st.markdown("\n".join(bullets))
     else:
         st.info("설명에 활용 가능한 신호가 부족합니다. (alerts/sigrec 파일 또는 관련 컬럼 생성 필요)")
 
@@ -591,7 +624,6 @@ with t_store:
         if np.isfinite(r_now): extra_metrics["위험확률_현재(3M)"] = f"{r_now*100:.1f}%"
         if np.isfinite(recent_delta): extra_metrics["최근변화(3M)"] = f"{recent_delta*100:+.1f}%p"
 
-        # ✅ 여기서 새 이름 사용
         prompt = build_ai_prompt(
             store_name=store_name, store_id=sel_id_str,
             district=district, category=category,
@@ -683,5 +715,3 @@ with t_policy:
         with tabs[1]: st.subheader("금융/보험 제안"); show_cards(policy_map[policy_map["support_type"].isin(["loan","credit","bnpl","insurance","fintech"])])
         with tabs[2]: st.subheader("마케팅/고객확장"); show_cards(policy_map[policy_map["support_type"].isin(["marketing","coupon","ad","growth"])])
         with tabs[3]: st.subheader("공동구매/원가절감"); show_cards(policy_map[policy_map["support_type"].isin(["sourcing","procurement","costdown","rent"])])
-
-
