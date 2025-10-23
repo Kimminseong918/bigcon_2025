@@ -1,7 +1,7 @@
 # -*- coding: utf-8 -*-
 from __future__ import annotations
 from pathlib import Path
-import io, os, json, datetime, textwrap
+import io, os, json, datetime, textwrap, re
 import numpy as np
 import pandas as pd
 import streamlit as st
@@ -26,87 +26,76 @@ THIS = Path(__file__).resolve()
 APP_DIR = THIS.parent
 ROOT = APP_DIR.parent
 OUT = ROOT / "outputs"
-OUT.mkdir(parents=True, exist_ok=True)  # ← outputs 폴더 보장
+OUT.mkdir(parents=True, exist_ok=True)  # outputs 폴더 보장
 
-# -------------------- Google Drive 직접 다운로드 URL --------------------
-PREDICTIONS_URL       = "https://drive.google.com/uc?id=1qInDALlRx25MlShIL4yT4GTiqO-qmSWd&export=download"
-PREDICTIONS_NAMED_URL = "https://drive.google.com/uc?id=1oDGLLAtPhvweruKWq2x9DTHC_LSyLG34&export=download"
-MERGED_URL            = "https://drive.google.com/uc?id=1-iPvmfHz3mjhRe95XEoB17Ja0S_zulJm&export=download"
+# -------------------- Google Drive URL (secrets 우선, fallback 존재) --------------------
+try:
+    PREDICTIONS_URL       = st.secrets["PREDICTIONS_URL"]
+    PREDICTIONS_NAMED_URL = st.secrets["PREDICTIONS_NAMED_URL"]
+    MERGED_URL            = st.secrets["MERGED_URL"]
+    ALERTS_URL            = st.secrets["ALERTS_URL"]
+except Exception:
+    # secrets 없을 때 기본값(드라이브 공유 링크 → uc?id=…&export=download)
+    PREDICTIONS_URL       = "https://drive.google.com/uc?id=1qInDALlRx25MlShIL4yT4GTiqO-qmSWd&export=download"
+    PREDICTIONS_NAMED_URL = "https://drive.google.com/uc?id=1oDGLLAtPhvweruKWq2x9DTHC_LSyLG34&export=download"
+    MERGED_URL            = "https://drive.google.com/uc?id=1-iPvmfHz3mjhRe95XEoB17Ja0S_zulJm&export=download"
+    ALERTS_URL            = "https://drive.google.com/uc?id=1_WdKGUzAK1xaXlxTbpkCfDpyonYQGWBx&export=download"
 
-# -------------------- 파일 자동 다운로드 --------------------
-def _download(url: str, out_path: Path):
+# -------------------- 공통: Google Drive에서 파일 다운로드 --------------------
+def _extract_gdrive_id(url_or_id: str) -> str | None:
+    """id=… 또는 /d/…/ 형태 모두에서 파일ID 추출"""
+    if "/" not in url_or_id:  # 이미 id만 온 경우
+        return url_or_id
+    m = re.search(r"(?:id=|/d/)([A-Za-z0-9_-]{20,})", url_or_id)
+    return m.group(1) if m else None
+
+def _download_from_gdrive(url_or_id: str, out_path: Path) -> bool:
     try:
+        file_id = _extract_gdrive_id(url_or_id)
+        if not file_id:
+            return False
+        url = f"https://drive.google.com/uc?export=download&id={file_id}"
         out_path.parent.mkdir(parents=True, exist_ok=True)
         with requests.get(url, stream=True, timeout=120) as r:
             r.raise_for_status()
             with open(out_path, "wb") as f:
-                for chunk in r.iter_content(8192):
+                for chunk in r.iter_content(1 << 20):
                     if chunk:
                         f.write(chunk)
-        print(f"[OK] {out_path.name} downloaded")
+        print(f"[OK] downloaded -> {out_path.name}")
+        return True
     except Exception as e:
-        print(f"[WARN] download failed for {out_path.name}: {e}")
+        print(f"[WARN] download failed: {out_path.name} ({e})")
+        return False
 
-def ensure_outputs_files():
-    needed = {
+def ensure_outputs_files(out_dir: Path) -> None:
+    """필요 파일 없으면 Drive에서 자동 다운로드"""
+    targets = {
         "predictions_latest_both_delta.parquet":       PREDICTIONS_URL,
         "predictions_latest_both_delta_named.parquet": PREDICTIONS_NAMED_URL,
         "merged_indices_monthly.parquet":              MERGED_URL,
-    }
-    for fname, url in needed.items():
-        p = OUT / fname
-        if not p.exists() or p.stat().st_size == 0:
-            _download(url, p)
-
-# 실제 다운로드 수행
-ensure_outputs_files()
-
-# -------------------- 파일 경로 설정 (다운로드 이후) --------------------
-named_candidate = OUT / "predictions_latest_both_delta_named.parquet"
-FILE_PRED   = named_candidate if named_candidate.exists() else (OUT / "predictions_latest_both_delta.parquet")
-FILE_MERGED = OUT / "merged_indices_monthly.parquet"
-FILE_MAPCSV = OUT / "big_data_set1_f.csv"          # (선택) 가맹점명 매핑 CSV가 있을 때만 사용
-FILE_ALERTS = OUT / "signals_alerts_delta.csv"     # (선택)
-FILE_SIGREC = OUT / "signals_recent_delta.csv"     # (선택)
-
-POLICY_XLSX = OUT / "정책지원관련매핑_251022.xlsx"  # (선택)
-LOG_DIR = OUT / "ai_logs"; LOG_DIR.mkdir(parents=True, exist_ok=True)
-LOG_PATH = LOG_DIR / "ai_explanation_log.jsonl"
-
-
-# -------------------- Drive 자동 다운로드 --------------------
-def _gdrive_id_from_link(url: str) -> str | None:
-    m = re.search(r"/d/([a-zA-Z0-9_-]{20,})/", url)
-    return m.group(1) if m else None
-
-def _download_gdrive_file(file_id_or_url: str, out_path: Path) -> bool:
-    try:
-        fid = _gdrive_id_from_link(file_id_or_url) if "/" in file_id_or_url else file_id_or_url
-        if not fid: return False
-        url = f"https://drive.google.com/uc?export=download&id={fid}"
-        with requests.get(url, stream=True, timeout=60) as r:
-            r.raise_for_status()
-            out_path.parent.mkdir(parents=True, exist_ok=True)
-            with open(out_path, "wb") as f:
-                for chunk in r.iter_content(1<<20):
-                    if chunk: f.write(chunk)
-        return True
-    except Exception:
-        return False
-
-def ensure_outputs_files(out_dir: Path):
-    out_dir.mkdir(parents=True, exist_ok=True)
-    targets = {
-        "merged_indices_monthly.parquet": "https://drive.google.com/file/d/1-iPvmfHz3mjhRe95XEoB17Ja0S_zulJm/view?usp=drive_link",
-        "predictions_latest_both_delta.parquet": "https://drive.google.com/file/d/1qInDALlRx25MlShIL4yT4GTiqO-qmSWd/view?usp=drive_link",
-        "predictions_latest_both_delta_named.parquet": "https://drive.google.com/file/d/1oDGLLAtPhvweruKWq2x9DTHC_LSyLG34/view?usp=drive_link",
+        "signals_alerts_delta.csv":                    ALERTS_URL,
     }
     for fname, url in targets.items():
         p = out_dir / fname
         if not p.exists() or p.stat().st_size == 0:
-            _download_gdrive_file(url, p)
+            _download_from_gdrive(url, p)
 
+# 실제 다운로드 수행
 ensure_outputs_files(OUT)
+
+# -------------------- 파일 경로 (다운로드 이후) --------------------
+named_candidate = OUT / "predictions_latest_both_delta_named.parquet"
+FILE_PRED   = named_candidate if named_candidate.exists() else (OUT / "predictions_latest_both_delta.parquet")
+FILE_MERGED = OUT / "merged_indices_monthly.parquet"
+FILE_MAPCSV = OUT / "big_data_set1_f.csv"          # (선택) 가맹점명 매핑 CSV가 있을 때만 사용
+FILE_ALERTS = OUT / "signals_alerts_delta.csv"     # (선택) 경고사유 텍스트
+FILE_SIGREC = OUT / "signals_recent_delta.csv"     # (선택) 지표 delta/gap 기반 설명
+POLICY_XLSX = OUT / "정책지원관련매핑_251022.xlsx"  # (선택)
+
+LOG_DIR = OUT / "ai_logs"; LOG_DIR.mkdir(parents=True, exist_ok=True)
+LOG_PATH = LOG_DIR / "ai_explanation_log.jsonl"
+
 
 # -------------------- UI/스타일 --------------------
 st.set_page_config(page_title="AI 기반 폐업 조기경보 플랫폼", layout="wide")
@@ -694,4 +683,5 @@ with t_policy:
         with tabs[1]: st.subheader("금융/보험 제안"); show_cards(policy_map[policy_map["support_type"].isin(["loan","credit","bnpl","insurance","fintech"])])
         with tabs[2]: st.subheader("마케팅/고객확장"); show_cards(policy_map[policy_map["support_type"].isin(["marketing","coupon","ad","growth"])])
         with tabs[3]: st.subheader("공동구매/원가절감"); show_cards(policy_map[policy_map["support_type"].isin(["sourcing","procurement","costdown","rent"])])
+
 
