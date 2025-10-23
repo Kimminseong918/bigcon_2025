@@ -22,6 +22,43 @@ except Exception:
         pass
 
 # -------------------- 경로 --------------------
+# === Google Drive 데이터 자동 다운로드 (배포 전 필수) ===
+import re
+
+def _gdrive_id_from_link(url: str) -> str | None:
+    m = re.search(r"/d/([a-zA-Z0-9_-]{20,})/", url)
+    return m.group(1) if m else None
+
+def _download_gdrive_file(file_id: str, out_path: Path) -> bool:
+    try:
+        url = f"https://drive.google.com/uc?export=download&id={file_id}"
+        with requests.get(url, stream=True, timeout=30) as r:
+            r.raise_for_status()
+            with open(out_path, "wb") as f:
+                for chunk in r.iter_content(chunk_size=1<<20):
+                    if chunk: f.write(chunk)
+        return True
+    except Exception as e:
+        st.warning(f"파일 다운로드 실패: {out_path.name} ({e})")
+        return False
+
+def ensure_outputs_files():
+    """Drive 링크에서 outputs 파일 자동 확보"""
+    OUT.mkdir(parents=True, exist_ok=True)
+    files = {
+        "merged_indices_monthly.parquet": "https://drive.google.com/file/d/1-iPvmfHz3mjhRe95XEoB17Ja0S_zulJm/view?usp=drive_link",
+        "predictions_latest_both_delta.parquet": "https://drive.google.com/file/d/1qInDALlRx25MlShIL4yT4GTiqO-qmSWd/view?usp=drive_link",
+        "predictions_latest_both_delta_named.parquet": "https://drive.google.com/file/d/1oDGLLAtPhvweruKWq2x9DTHC_LSyLG34/view?usp=drive_link",
+    }
+    for fname, url in files.items():
+        path = OUT / fname
+        if path.exists() and path.stat().st_size > 0:
+            continue
+        fid = _gdrive_id_from_link(url) or url
+        _download_gdrive_file(fid, path)
+
+ensure_outputs_files()
+
 THIS = Path(__file__).resolve()
 APP_DIR = THIS.parent
 ROOT = APP_DIR.parent
@@ -1054,4 +1091,5 @@ with t_policy:
             show_cards(policy_map[policy_map["support_type"].isin(
                 ["sourcing","procurement","costdown","rent"]
             )])
+
 
