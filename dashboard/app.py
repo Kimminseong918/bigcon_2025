@@ -1,7 +1,7 @@
 # -*- coding: utf-8 -*-
 from __future__ import annotations
 from pathlib import Path
-import io, os, json, datetime, textwrap, re
+import io, os, json, datetime, textwrap
 import numpy as np
 import pandas as pd
 import streamlit as st
@@ -20,22 +20,59 @@ try:
     from streamlit.runtime.secrets import StreamlitSecretNotFoundError
 except Exception:
     class StreamlitSecretNotFoundError(Exception): ...
+
 # -------------------- 경로 --------------------
 THIS = Path(__file__).resolve()
 APP_DIR = THIS.parent
 ROOT = APP_DIR.parent
 OUT = ROOT / "outputs"
+OUT.mkdir(parents=True, exist_ok=True)  # ← outputs 폴더 보장
 
+# -------------------- Google Drive 직접 다운로드 URL --------------------
+PREDICTIONS_URL       = "https://drive.google.com/uc?id=1qInDALlRx25MlShIL4yT4GTiqO-qmSWd&export=download"
+PREDICTIONS_NAMED_URL = "https://drive.google.com/uc?id=1oDGLLAtPhvweruKWq2x9DTHC_LSyLG34&export=download"
+MERGED_URL            = "https://drive.google.com/uc?id=1-iPvmfHz3mjhRe95XEoB17Ja0S_zulJm&export=download"
+
+# -------------------- 파일 자동 다운로드 --------------------
+def _download(url: str, out_path: Path):
+    try:
+        out_path.parent.mkdir(parents=True, exist_ok=True)
+        with requests.get(url, stream=True, timeout=120) as r:
+            r.raise_for_status()
+            with open(out_path, "wb") as f:
+                for chunk in r.iter_content(8192):
+                    if chunk:
+                        f.write(chunk)
+        print(f"[OK] {out_path.name} downloaded")
+    except Exception as e:
+        print(f"[WARN] download failed for {out_path.name}: {e}")
+
+def ensure_outputs_files():
+    needed = {
+        "predictions_latest_both_delta.parquet":       PREDICTIONS_URL,
+        "predictions_latest_both_delta_named.parquet": PREDICTIONS_NAMED_URL,
+        "merged_indices_monthly.parquet":              MERGED_URL,
+    }
+    for fname, url in needed.items():
+        p = OUT / fname
+        if not p.exists() or p.stat().st_size == 0:
+            _download(url, p)
+
+# 실제 다운로드 수행
+ensure_outputs_files()
+
+# -------------------- 파일 경로 설정 (다운로드 이후) --------------------
 named_candidate = OUT / "predictions_latest_both_delta_named.parquet"
 FILE_PRED   = named_candidate if named_candidate.exists() else (OUT / "predictions_latest_both_delta.parquet")
 FILE_MERGED = OUT / "merged_indices_monthly.parquet"
-FILE_MAPCSV = OUT / "big_data_set1_f.csv"
-FILE_ALERTS = OUT / "signals_alerts_delta.csv"
-FILE_SIGREC = OUT / "signals_recent_delta.csv"
+FILE_MAPCSV = OUT / "big_data_set1_f.csv"          # (선택) 가맹점명 매핑 CSV가 있을 때만 사용
+FILE_ALERTS = OUT / "signals_alerts_delta.csv"     # (선택)
+FILE_SIGREC = OUT / "signals_recent_delta.csv"     # (선택)
 
-POLICY_XLSX = OUT / "정책지원관련매핑_251022.xlsx"
+POLICY_XLSX = OUT / "정책지원관련매핑_251022.xlsx"  # (선택)
 LOG_DIR = OUT / "ai_logs"; LOG_DIR.mkdir(parents=True, exist_ok=True)
 LOG_PATH = LOG_DIR / "ai_explanation_log.jsonl"
+
 
 # -------------------- Drive 자동 다운로드 --------------------
 def _gdrive_id_from_link(url: str) -> str | None:
@@ -657,3 +694,4 @@ with t_policy:
         with tabs[1]: st.subheader("금융/보험 제안"); show_cards(policy_map[policy_map["support_type"].isin(["loan","credit","bnpl","insurance","fintech"])])
         with tabs[2]: st.subheader("마케팅/고객확장"); show_cards(policy_map[policy_map["support_type"].isin(["marketing","coupon","ad","growth"])])
         with tabs[3]: st.subheader("공동구매/원가절감"); show_cards(policy_map[policy_map["support_type"].isin(["sourcing","procurement","costdown","rent"])])
+
