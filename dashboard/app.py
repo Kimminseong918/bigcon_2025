@@ -1,12 +1,19 @@
+# -*- coding: utf-8 -*-
+"""
+AI 기반 폐업 조기경보 플랫폼 (Streamlit)
+- Overview / Risk Map / Store Explorer / AI Policy Lab
+- 쉬운 해석 캡션 + 'AI 설명 켜기' 토글(Gemini) + 프롬프트/응답 로깅(JSONL)
+"""
+
 from __future__ import annotations
 from pathlib import Path
-import io, os, json, datetime, textwrap
+import io, os, json, datetime, textwrap, re
 import numpy as np
 import pandas as pd
 import streamlit as st
 import plotly.express as px
 import plotly.graph_objects as go
-import requests  # ← 원격(Drive) 파일 로드를 위해 추가
+import requests  # Drive 원격 다운로드
 
 # (선택) Gemini
 try:
@@ -22,43 +29,6 @@ except Exception:
         pass
 
 # -------------------- 경로 --------------------
-# === Google Drive 데이터 자동 다운로드 (배포 전 필수) ===
-import re
-
-def _gdrive_id_from_link(url: str) -> str | None:
-    m = re.search(r"/d/([a-zA-Z0-9_-]{20,})/", url)
-    return m.group(1) if m else None
-
-def _download_gdrive_file(file_id: str, out_path: Path) -> bool:
-    try:
-        url = f"https://drive.google.com/uc?export=download&id={file_id}"
-        with requests.get(url, stream=True, timeout=30) as r:
-            r.raise_for_status()
-            with open(out_path, "wb") as f:
-                for chunk in r.iter_content(chunk_size=1<<20):
-                    if chunk: f.write(chunk)
-        return True
-    except Exception as e:
-        st.warning(f"파일 다운로드 실패: {out_path.name} ({e})")
-        return False
-
-def ensure_outputs_files():
-    """Drive 링크에서 outputs 파일 자동 확보"""
-    OUT.mkdir(parents=True, exist_ok=True)
-    files = {
-        "merged_indices_monthly.parquet": "https://drive.google.com/file/d/1-iPvmfHz3mjhRe95XEoB17Ja0S_zulJm/view?usp=drive_link",
-        "predictions_latest_both_delta.parquet": "https://drive.google.com/file/d/1qInDALlRx25MlShIL4yT4GTiqO-qmSWd/view?usp=drive_link",
-        "predictions_latest_both_delta_named.parquet": "https://drive.google.com/file/d/1oDGLLAtPhvweruKWq2x9DTHC_LSyLG34/view?usp=drive_link",
-    }
-    for fname, url in files.items():
-        path = OUT / fname
-        if path.exists() and path.stat().st_size > 0:
-            continue
-        fid = _gdrive_id_from_link(url) or url
-        _download_gdrive_file(fid, path)
-
-ensure_outputs_files()
-
 THIS = Path(__file__).resolve()
 APP_DIR = THIS.parent
 ROOT = APP_DIR.parent
@@ -76,6 +46,58 @@ POLICY_XLSX = OUT / "정책지원관련매핑_251022.xlsx"
 LOG_DIR = OUT / "ai_logs"
 LOG_DIR.mkdir(parents=True, exist_ok=True)
 LOG_PATH = LOG_DIR / "ai_explanation_log.jsonl"
+
+# === Google Drive 데이터 자동 다운로드 (OUT 정의 이후에 선언/호출) ===
+def _gdrive_id_from_link(url: str) -> str | None:
+    m = re.search(r"/d/([a-zA-Z0-9_-]{20,})/", url)
+    return m.group(1) if m else None
+
+def _download_gdrive_file(file_id_or_url: str, out_path: Path) -> bool:
+    """
+    file_id 혹은 전체 URL 둘 다 허용.
+    """
+    try:
+        if "/" in file_id_or_url:  # URL이 온 경우
+            fid = _gdrive_id_from_link(file_id_or_url)
+        else:
+            fid = file_id_or_url
+        if not fid:
+            st.warning(f"잘못된 Drive 링크: {file_id_or_url}")
+            return False
+
+        url = f"https://drive.google.com/uc?export=download&id={fid}"
+        with requests.get(url, stream=True, timeout=60) as r:
+            r.raise_for_status()
+            out_path.parent.mkdir(parents=True, exist_ok=True)
+            with open(out_path, "wb") as f:
+                for chunk in r.iter_content(chunk_size=1<<20):
+                    if chunk:
+                        f.write(chunk)
+        return True
+    except Exception as e:
+        st.warning(f"파일 다운로드 실패: {out_path.name} ({e})")
+        return False
+
+def ensure_outputs_files(out_dir: Path):
+    """
+    배포 시 outputs 폴더가 비어 있으면 Drive에서 자동 다운로드.
+    """
+    out_dir.mkdir(parents=True, exist_ok=True)
+    targets = {
+        # 필요한 것만: 예측/병합 파일
+        "merged_indices_monthly.parquet": "https://drive.google.com/file/d/1-iPvmfHz3mjhRe95XEoB17Ja0S_zulJm/view?usp=drive_link",
+        "predictions_latest_both_delta.parquet": "https://drive.google.com/file/d/1qInDALlRx25MlShIL4yT4GTiqO-qmSWd/view?usp=drive_link",
+        # 있으면 더 좋음(가맹점명 포함 버전)
+        "predictions_latest_both_delta_named.parquet": "https://drive.google.com/file/d/1oDGLLAtPhvweruKWq2x9DTHC_LSyLG34/view?usp=drive_link",
+    }
+    for fname, url in targets.items():
+        path = out_dir / fname
+        if path.exists() and path.stat().st_size > 0:
+            continue
+        _download_gdrive_file(url, path)
+
+# ✅ OUT이 정의된 후에 호출해야 함 (NameError 방지)
+ensure_outputs_files(OUT)
 
 # -------------------- UI/스타일 --------------------
 st.set_page_config(page_title="AI 기반 폐업 조기경보 플랫폼", layout="wide")
@@ -162,9 +184,6 @@ def load_sigrec() -> pd.DataFrame:
 
 @st.cache_data(show_spinner=False)
 def load_policy_map() -> pd.DataFrame:
-    """
-    정책 매핑 엑셀을 유연하게 읽어 표준 스키마로 정규화.
-    """
     if not POLICY_XLSX.exists():
         return pd.DataFrame()
     try:
@@ -201,7 +220,6 @@ def load_policy_map() -> pd.DataFrame:
     df["region"] = df["region"].astype(str).str.strip()
     df["industry"] = df["industry"].astype(str).str.strip()
     df["min_risk"] = df["min_risk"].astype(str).str.strip()
-    # <-- 과거 오류 지점: Series.lower() 방지 위해 .str.lower() 사용
     df["risk_group"] = df["risk_group"].astype(str).str.strip().str.lower()
 
     if "risk_tags" in df.columns:
@@ -216,16 +234,15 @@ def load_policy_map() -> pd.DataFrame:
 
     def _infer_support_type(row):
         t = (row.get("support_type") or "").strip().lower()
-        if t:
-            return t
+        if t: return t
         g = (row.get("risk_group") or "").lower()
         if any(k in g for k in ["대출","금융","부담","금리"]): return "loan"
         if any(k in g for k in ["보험"]): return "insurance"
         if any(k in g for k in ["고객","마케팅","홍보","판로"]): return "marketing"
         if any(k in g for k in ["공동구매","원가","임대","비용"]): return "sourcing"
         return "policy"
-    df["support_type"] = df.apply(_infer_support_type, axis=1)
 
+    df["support_type"] = df.apply(_infer_support_type, axis=1)
     return df
 
 def _ensure_datetime(df: pd.DataFrame, col="month"):
@@ -270,16 +287,12 @@ def latest_per_store(df: pd.DataFrame) -> pd.DataFrame:
     return df.loc[idx].copy()
 
 def pct(n, d):
-    try:
-        return f"{100*n/d:.1f}%"
-    except Exception:
-        return "N/A"
+    try: return f"{100*n/d:.1f}%"
+    except Exception: return "N/A"
 
 def num(x):
-    try:
-        return f"{int(x):,}"
-    except Exception:
-        return "0"
+    try: return f"{int(x):,}"
+    except Exception: return "0"
 
 def _kdict():
     return {
@@ -335,17 +348,14 @@ def _describe_ts(months: pd.Series, values: pd.Series, scope_label: str) -> str:
 
 # ------------- Gemini: 키 탐색 + 모델 선택 + 호출 + 로깅 -------------
 def _get_gemini_key_from_user() -> str | None:
-    # secrets → env → session → 입력란
     key = None
     try:
         if hasattr(st, "secrets"):
             key = st.secrets.get("GEMINI_API_KEY", None)
     except StreamlitSecretNotFoundError:
         key = None
-    if not key:
-        key = os.getenv("GEMINI_API_KEY")
-    if not key:
-        key = st.session_state.get("GEMINI_API_KEY")
+    if not key: key = os.getenv("GEMINI_API_KEY")
+    if not key: key = st.session_state.get("GEMINI_API_KEY")
     if not key:
         with st.popover("🔐 Gemini API 키 입력", use_container_width=True):
             st.caption("· 권장: .streamlit/secrets.toml 또는 환경변수 사용", unsafe_allow_html=True)
@@ -355,22 +365,15 @@ def _get_gemini_key_from_user() -> str | None:
                 key = _k.strip()
                 st.success("키가 세션에 저장되었습니다.")
     return key
-# --- 교체 시작: 모델 조회/선택/호출 ---
 
 def _list_models_safe():
-    """
-    사용 가능한 모델 목록을 (name, methods) 형태로 반환.
-    methods에는 'generateContent' 또는 'generate_content' 같은 지원 메서드 목록이 들어감.
-    """
     if not _HAS_GEMINI:
         return []
     try:
         models = []
         for m in genai.list_models():
-            # google-generativeai >= 0.7.x 기준
             name = getattr(m, "name", None) or getattr(m, "model", None)
             methods = set(getattr(m, "supported_generation_methods", []) or [])
-            # 일부 버전은 필드명이 다를 수 있어 하위 호환
             if not methods:
                 caps = getattr(m, "generation_capabilities", None)
                 if isinstance(caps, dict):
@@ -381,11 +384,6 @@ def _list_models_safe():
         return []
 
 def _pick_gemini_model() -> str:
-    """
-    generateContent를 지원하는 텍스트 생성 모델만 후보로.
-    우선순위: 2.5 flash > 2.5 pro > 1.5 flash > 1.5 pro > 1.0 pro
-    """
-    # 권장 우선순위(항상 전체 이름 사용: 'models/...' 접두사 포함)
     preferred = [
         "models/gemini-2.5-flash",
         "models/gemini-2.5-pro",
@@ -394,26 +392,16 @@ def _pick_gemini_model() -> str:
         "models/gemini-1.5-pro",
         "models/gemini-1.0-pro",
     ]
-
     avail = _list_models_safe()
-
-    # generateContent / generate_content 지원 모델만 필터
     def is_text_model(methods: set) -> bool:
         methods_lower = {str(x).lower() for x in (methods or set())}
         return any(k in methods_lower for k in ("generatecontent", "generate_content"))
-
     text_models = [name for (name, methods) in avail if name and is_text_model(methods)]
-
-    # 1) 선호 목록과 교집합 우선 선택
     for m in preferred:
         if m in text_models:
             return m
-
-    # 2) 리스트 조회는 됐지만 선호 목록이 없으면 텍스트 모델 중 첫 번째
     if text_models:
         return text_models[0]
-
-    # 3) list_models 자체가 실패했거나 텍스트 모델 식별이 안되면 안전한 명시 모델로
     return "models/gemini-2.5-flash"
 
 def _gemini_generate(prompt: str) -> str:
@@ -426,16 +414,12 @@ def _gemini_generate(prompt: str) -> str:
         genai.configure(api_key=key)
         model_name = _pick_gemini_model()
         model = genai.GenerativeModel(model_name=model_name)
-        resp = model.generate_content(
-            prompt,
-            generation_config={"temperature": 0.4}  # 안정적 요약
-        )
+        resp = model.generate_content(prompt, generation_config={"temperature": 0.4})
         text = (resp.text or "").strip()
         if not text:
             return f"[AI 설명 생성 실패] 응답이 비었습니다. 사용 모델: {model_name}"
         return text
     except Exception as e:
-        # 디버깅 힌트: 호출 가능한 모델만 다시 나열
         avail = _list_models_safe()
         callable_models = [n for (n, m) in avail if n and any(
             k in {str(x).lower() for x in (m or set())}
@@ -443,51 +427,6 @@ def _gemini_generate(prompt: str) -> str:
         )]
         hint = f"사용 가능한 텍스트 모델: {', '.join(callable_models[:8])}..." if callable_models else "list_models 실패(권한/네트워크 확인)"
         return f"[AI 설명 생성 오류] {e}\n힌트: {hint}"
-
-# --- 교체 끝 ---
-
-def _save_ai_log(store_id: str, prompt: str, response: str, metrics: dict):
-    LOG_DIR.mkdir(parents=True, exist_ok=True)
-    log = {
-        "timestamp": datetime.datetime.now().isoformat(),
-        "store_id": store_id,
-        "prompt": prompt,
-        "response": response,
-        "metrics": metrics,
-    }
-    with open(LOG_PATH, "a", encoding="utf-8") as f:
-        f.write(json.dumps(log, ensure_ascii=False) + "\n")
-
-def _build_ai_context(store_name: str, store_id: str, district: str, category: str,
-                      top_groups: list[str], reasons: list[str], score_now: float,
-                      extra_metrics: dict) -> str:
-    """
-    선택 점포 핵심 지표만 깔끔히 프롬프트로 구성
-    """
-    lines = []
-    lines.append(f"[점포] 이름: {store_name} / ID: {store_id}")
-    if district or category:
-        lines.append(f"[메타] 행정동: {district or '-'} / 업종: {category or '-'}")
-    if np.isfinite(score_now):
-        lines.append(f"[현재 위험확률(3M)] {score_now*100:.1f}%")
-    if top_groups:
-        lines.append("[영향 그룹 Top3] " + " · ".join(top_groups))
-    if reasons:
-        lines.append("[원인 신호] " + " / ".join([r.lstrip('- ').strip() for r in reasons]))
-    if extra_metrics:
-        pairs = [f"{k}: {v}" for k, v in extra_metrics.items()]
-        lines.append("[요약 수치] " + " / ".join(pairs))
-
-    context = "\n".join(lines)
-    # 지시어
-    system = textwrap.dedent("""
-    작업: 주어진 점포 위험요약을 2~3줄로 설명하세요.
-    형식:
-    - 왜 알림이 떴는지(핵심 원인)
-    - 지금 점포주가 할 일(CTA, 행동 1~2개)
-    문체: 간결, 실행지향, 숫자는 그대로 사용.
-    """).strip()
-    return system + "\n\n" + context
 
 # -------------------- 탭 --------------------
 t_overview, t_map, t_store, t_policy = st.tabs(
@@ -548,7 +487,7 @@ with t_map:
         g6 = pred.groupby("district", as_index=False, observed=False)["risk_proba_6m"].mean() if "risk_proba_6m" in pred else None
 
         if geo_path.exists():
-            import json, numpy as np
+            import json
             with open(geo_path, encoding="utf-8") as f:
                 geojson = json.load(f)
 
@@ -560,11 +499,9 @@ with t_map:
             val_col = "risk_proba_3m" if which.startswith("3개월") else "risk_proba_6m"
             g = g3 if val_col == "risk_proba_3m" else g6
 
-            # ✅ 색 범위를 데이터에 맞게 동적으로 설정
             vals = pd.to_numeric(g[val_col], errors="coerce")
             vmin, vmax = float(vals.min()), float(vals.max())
             if not (np.isfinite(vmin) and np.isfinite(vmax)) or vmin == vmax:
-                # 전부 같은 값이거나 결측이면 안전한 기본값
                 vmin, vmax = 0.0, 1.0
 
             fig = px.choropleth_mapbox(
@@ -574,18 +511,16 @@ with t_map:
                 color=val_col,
                 featureidkey="properties.name",
                 color_continuous_scale="Reds",
-                range_color=(vmin, vmax),   # ⬅️ 여기!
+                range_color=(vmin, vmax),
                 mapbox_style="carto-positron",
                 zoom=11.7,
                 center={"lat": 37.547, "lon": 127.035},
                 opacity=0.68,
                 height=680,
-                title=("행정동별 평균 3개월 위험도"
-                       if val_col == "risk_proba_3m"
+                title=("행정동별 평균 3개월 위험도" if val_col == "risk_proba_3m"
                        else "행정동별 평균 6개월 위험도"),
             )
 
-            # 툴팁: 크고 명확하게 + %표시
             fig.update_traces(
                 hovertemplate=(
                     "<b>행정동:</b> %{location}<br>"
@@ -603,7 +538,7 @@ with t_map:
                     font_family="Arial",
                 ),
                 margin=dict(l=0, r=0, t=60, b=0),
-                coloraxis_colorbar=dict(   # colorbar 설정은 coloraxis_colorbar로
+                coloraxis_colorbar=dict(
                     title="위험 확률(%)",
                     tickformat=".0%",
                 ),
@@ -621,12 +556,8 @@ with t_map:
                 use_container_width=True, height=580,
             )
 
-
-
-
 # -------------------- Store Explorer (리뉴얼) --------------------
 with t_store:
-    # ====== 스타일: 카드/배지/AI요약 레이아웃 ======
     st.markdown("""
     <style>
     .ai-summary-card {
@@ -664,21 +595,17 @@ with t_store:
             placeholder="업종 선택"
         )
 
-    # 선택 조건으로 후보 필터링
     cand = pred.copy()
     if dist_sel and "district" in cand: cand = cand[cand["district"].isin(dist_sel)]
     if cat_sel and "category" in cand:  cand = cand[cand["category"].isin(cat_sel)]
 
-    # 최신 레코드 기준 유니크 스토어 목록
     cand_latest = latest_per_store(cand)
 
-    # 표시할 가게명 열 결정
     name_col = "MCT_NM_mask" if "MCT_NM_mask" in cand_latest.columns else ("MCT_NM" if "MCT_NM" in cand_latest.columns else None)
     if not name_col:
         cand_latest["__tmp_name__"] = cand_latest["store_id"].astype(str)
         name_col = "__tmp_name__"
 
-    # 드롭다운 라벨: "가게명 · 행정동"
     def _fmt_label(row):
         nm = str(row.get(name_col, "")).strip()
         dong = str(row.get("district", "")).strip()
@@ -688,7 +615,6 @@ with t_store:
     opts = cand_latest[["store_id", "district", name_col]].copy()
     opts["__label"] = opts.apply(_fmt_label, axis=1)
 
-    # 중복 라벨엔 ID 꼬리표
     dup = opts["__label"].duplicated(keep=False)
     if dup.any():
         opts.loc[dup, "__label"] = opts.loc[dup].apply(lambda r: f"{r['__label']} ({str(r['store_id'])[-5:]})", axis=1)
@@ -711,31 +637,26 @@ with t_store:
     sel_id = label_to_id[sel_label]
     sel_id_str = str(sel_id)
 
-    # 선택 정보 세션 저장 → Policy Lab에서 사용
     sel_row_latest = cand_latest[cand_latest["store_id"].astype(str)==sel_id_str].iloc[0]
     st.session_state["sel_store_id"] = sel_id_str
     st.session_state["sel_district"] = str(sel_row_latest.get("district",""))
     st.session_state["sel_category"] = str(sel_row_latest.get("category",""))
 
-    # 선택한 점포 시계열
     sdf = pred[pred["store_id"].astype(str) == sel_id_str].sort_values("month")
     if sdf.empty:
         st.info("선택한 점포의 시계열 데이터가 아직 없어요. 다른 점포를 선택해 보실까요?")
         st.stop()
 
-    # 선택 점포 타이틀
     store_disp = str(sel_row_latest.get("MCT_NM", sel_id_str))
     st.markdown(f"#### 📍 선택 점포: **{store_disp}**")
     st.markdown("<div class='sec-caption'>아래 지표는 최근 월 기준입니다. 추세를 함께 보면서 개선 포인트를 찾아볼게요!</div>", unsafe_allow_html=True)
 
-    # ---------- 상단 요약 ----------
     cA, cB, cC = st.columns(3)
     last = sdf.iloc[-1]
     t3 = int(last.get("risk_label_3m", 0))
     t6 = int(last.get("risk_label_6m", 0))
 
     with cA:
-        # 3개월: 고위험 / 안정
         st.markdown(
             f"**3개월 등급**  \n"
             f"<span class='badge {'badge-red' if t3==1 else 'badge-emerald'}'>"
@@ -744,7 +665,6 @@ with t_store:
         )
 
     with cB:
-        # 6개월: t3=1이면 '고위험' 계승, 그 외 t6=1이면 '위험', 아니면 '안정'
         tier6  = '고위험' if t3==1 else ('위험' if t6==1 else '안정')
         color6 = 'badge-red' if tier6=='고위험' else ('badge-amber' if tier6=='위험' else 'badge-emerald')
         st.markdown(
@@ -757,8 +677,6 @@ with t_store:
         r_now = float(last.get("risk_proba_3m", np.nan))
         st.metric("폐업 위험 점수(현재, 3개월)", "N/A" if not np.isfinite(r_now) else f"{r_now*100:.1f}%")
 
-
-    # ---------- 추세 그래프 ----------
     g1,g2 = st.columns(2)
     if {"month","risk_proba_3m"}.issubset(sdf.columns):
         g1.markdown(_intro_text("shop3"), unsafe_allow_html=True)
@@ -774,7 +692,6 @@ with t_store:
         g2.plotly_chart(fig2, use_container_width=True)
         g2.markdown(_describe_ts(sdf["month"], sdf["risk_proba_6m"], "이 점포(6개월)"), unsafe_allow_html=True)
 
-    # -------------------- ⚠️ 폐업 조기위험 원인 분석 --------------------
     st.markdown("#### ⚠️ 폐업 조기위험 원인 분석")
     st.caption("아래 항목은 최근 변화가 큰 지표를 모아 보여드립니다!")
 
@@ -790,7 +707,6 @@ with t_store:
     else:
         st.markdown("<span class='small'>그룹 기여 정보가 없어 생략합니다.</span>", unsafe_allow_html=True)
 
-    # --- 1) 경고 사유 텍스트 수집
     bullets: list[str] = []
     if not alerts.empty and {"store_id","month"}.issubset(alerts.columns):
         a = alerts.copy()
@@ -803,7 +719,6 @@ with t_store:
                 txt = str(row.get(key,"")).strip()
                 if txt: bullets.append(f"- {txt}")
 
-    # --- 2) 폴백: sigrec 기반 Top3
     if not bullets and (not sigrec.empty) and {"store_id","month"}.issubset(sigrec.columns):
         s = sigrec.copy()
         s["store_id"] = s["store_id"].astype(str).str.strip()
@@ -843,64 +758,46 @@ with t_store:
     else:
         st.info("설명에 활용 가능한 신호가 부족합니다. (alerts/sigrec 파일 또는 관련 컬럼 생성 필요)")
 
-    # -------------------- AI 설명 토글 + Gemini 호출 + 로깅 --------------------
     col_ai1, _ = st.columns([1, 3])
-
     try:
         ai_toggle = col_ai1.toggle("AI 설명 켜기 🔎", value=False)
     except Exception:
         ai_toggle = col_ai1.checkbox("AI 설명 켜기 🔎", value=False)
 
-    # (톤 순화: 과도한 부정어를 조금 부드럽게 치환)
     def _friendly_tone(text: str) -> str:
-        rep = {
-            "악화": "아쉬운 흐름", "급감": "큰 조정", "감소": "조정", "하락": "조정",
-            "문제": "과제", "위험": "위험"  # '위험'은 등급 표기에 쓰므로 유지
-        }
+        rep = {"악화":"아쉬운 흐름","급감":"큰 조정","감소":"조정","하락":"조정","문제":"과제","위험":"위험"}
         for a,b in rep.items():
             text = text.replace(a,b)
         return text
 
-    # 문장 분할 → 불릿 리스트
     def _to_bullets(text: str, max_items: int = 4) -> list[str]:
-        if not text:
-            return []
+        if not text: return []
         parts = []
-        for seg in text.replace("•", "\n").replace("·", "\n").split("\n"):
+        for seg in text.replace("•","\n").replace("·","\n").split("\n"):
             seg = seg.strip(" -•·\t")
-            if not seg:
-                continue
+            if not seg: continue
             for s in seg.split(". "):
                 s = s.strip(" -•·\t.")
-                if s:
-                    parts.append(s)
+                if s: parts.append(s)
         return parts[:max_items]
 
-    # === ✅ 핵심 변경: 토글 바로 아래에 AI 요약 표시 ===
     if ai_toggle:
-        # (선택) 키 입력 UI
         if _HAS_GEMINI:
             _ = _get_gemini_key_from_user()
 
-        # 프롬프트 컨텍스트 구성
         store_name = str(sel_row_latest.get("MCT_NM", sel_id_str))
         district = st.session_state.get("sel_district", "")
         category = st.session_state.get("sel_category", "")
 
-        # 최근 3개월 위험확률 변화
         sdf_local = sdf[["month", "risk_proba_3m"]].dropna()
         recent_delta = np.nan
         if len(sdf_local) >= 2:
             w = 3 if len(sdf_local) >= 4 else (len(sdf_local) - 1)
-            recent_delta = float(
-                sdf_local["risk_proba_3m"].iloc[-1]
-                - sdf_local["risk_proba_3m"].iloc[-(w + 1)]
-            )
+            recent_delta = float(sdf_local["risk_proba_3m"].iloc[-1] - sdf_local["risk_proba_3m"].iloc[-(w + 1)])
         extra_metrics = {}
-        if np.isfinite(r_now):
-            extra_metrics["위험확률_현재(3M)"] = f"{r_now*100:.1f}%"
-        if np.isfinite(recent_delta):
-            extra_metrics["최근변화(3M)"] = f"{recent_delta*100:+.1f}%p"
+        r_now = float(last.get("risk_proba_3m", np.nan))
+        if np.isfinite(r_now): extra_metrics["위험확률_현재(3M)"] = f"{r_now*100:.1f}%"
+        if np.isfinite(recent_delta): extra_metrics["최근변화(3M)"] = f"{recent_delta*100:+.1f}%p"
 
         prompt = _build_ai_context(
             store_name=store_name,
@@ -913,14 +810,12 @@ with t_store:
             extra_metrics=extra_metrics,
         )
 
-        # ✨ 토글 아래 즉시 AI 요약 표시
         with st.spinner("AI가 점포 상황을 정리하는 중입니다..."):
             ai_text = _gemini_generate(prompt)
             ai_text = _friendly_tone(ai_text)
 
         st.markdown("**✨ AI 요약**")
         items = _to_bullets(ai_text, max_items=3)
-
         if items:
             st.markdown(
                 "<ul style='margin-top:0.4rem; line-height:1.6;'>"
@@ -931,11 +826,7 @@ with t_store:
         else:
             st.caption("생성된 문장이 없습니다.")
 
-
-        # 로그 저장
         _save_ai_log(sel_id_str, prompt, ai_text, extra_metrics)
-
-
 
 # -------------------- AI Policy Lab --------------------
 with t_policy:
@@ -945,7 +836,6 @@ with t_policy:
         st.info("예측 파일이 필요합니다.")
         st.stop()
 
-    # ---------- Store Explorer와 동일한 상단 드롭다운 ----------
     st.markdown("##### 점포 선택")
     c_dist2, c_cat2, c_shop2 = st.columns([1.0, 1.0, 1.4])
 
@@ -1016,7 +906,6 @@ with t_policy:
     sel_id2 = label_to_id2[sel_label2]
     sel_id_str2 = str(sel_id2)
 
-    # 선택 정보 업데이트(세션)
     row_latest2 = cand2_latest[cand2_latest["store_id"].astype(str)==sel_id_str2].iloc[0]
     district   = str(row_latest2.get("district",""))
     category   = str(row_latest2.get("category",""))
@@ -1027,19 +916,16 @@ with t_policy:
     st.session_state["sel_category"] = category
     st.session_state["sel_risk_tier"] = risk_tier
 
-    # ---------- 선택 점포 데이터 ----------
     sdf2 = pred[pred["store_id"].astype(str) == sel_id_str2].sort_values("month")
     if sdf2.empty:
         st.info("선택한 점포의 데이터가 없습니다.")
         st.stop()
 
-    # 간단 메트릭
     c1, c2, c3 = st.columns(3)
     c1.metric("현재 등급", risk_tier)
     c2.metric("행정동", district if district else "-")
     c3.metric("업종", category if category else "-")
 
-    # ---------- 정책/액션 추천 ----------
     tabs = st.tabs(["정책 추천", "금융/보험 제안", "마케팅/고객확장", "공동구매/원가절감"])
 
     if policy_map.empty:
@@ -1091,5 +977,3 @@ with t_policy:
             show_cards(policy_map[policy_map["support_type"].isin(
                 ["sourcing","procurement","costdown","rent"]
             )])
-
-
