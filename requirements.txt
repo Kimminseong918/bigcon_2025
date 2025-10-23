@@ -10,3 +10,4 @@ openpyxl==3.1.5            # 정책 매핑 엑셀 로드
 
 # --- (옵션) AI 요약 토글 사용 시 ---
 google-generativeai==0.7.2 # Gemini 호출; 쓰지 않으면 이 줄 삭제 가능
+python-3.12.3
