@@ -740,7 +740,6 @@ with t_policy:
             with t: st.info("정책 매핑 파일이 없어 데모 카드로 대체됩니다. outputs 폴더의 정책 매핑 xlsx 파일명을 확인하세요.")
     else:
         def show_cards(df):
-            if df.empty: st.info("추천 항목이 없습니다."); return
             top = df.head(8)
             for _, r in top.iterrows():
                 with st.container(border=True):
@@ -758,7 +757,6 @@ with t_policy:
         with tabs[1]: st.subheader("금융/보험 제안"); show_cards(policy_map[policy_map["support_type"].isin(["loan","credit","bnpl","insurance","fintech"])])
         with tabs[2]: st.subheader("마케팅/고객확장"); show_cards(policy_map[policy_map["support_type"].isin(["marketing","coupon","ad","growth"])])
         with tabs[3]:
-            st.subheader("공동구매/원가절감")
             show_cards(policy_map[policy_map["support_type"].isin(["sourcing","procurement","costdown","rent"])])
 
             # === ⬇️ 이미지 참고한 '공동구매 & 리워드' 추가 카드 ===
@@ -792,4 +790,5 @@ with t_policy:
                     """,
                     unsafe_allow_html=True,
                 )
+
 
