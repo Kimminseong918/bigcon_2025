@@ -43,9 +43,14 @@ risk_lgbm_delta_3m.joblib: 3개월 예측 모델 파일
 risk_lgbm_delta_6m.joblib: 6개월 예측 모델 파일
 
 
+5. 실행 결과
+- https://bigcon2025-5aczsfae5topd2pyitsxjc.streamlit.app/
+- 해당 페이지는 Streamlit Cloud를 이용해 배포되었습니다.
 
-5. 첨언
-모델을 실행하는 경우, 아래와 같은 requirements.txt를 이용하는 것을 권장합니다.
+
+6. 첨언
+
+ (1) 모델을 실행하는 경우, 아래와 같은 requirements.txt를 이용하는 것을 권장합니다.
 
 - numpy==1.26.4
 - pandas==2.2.2
@@ -58,3 +63,5 @@ risk_lgbm_delta_6m.joblib: 6개월 예측 모델 파일
 - python-dateutil
 - pytz
 - tzdata
+
+ (2) 대시보드 상에서 'AI 설명 켜' 기능을 사용하는 경우, https://aistudio.google.com/apikey 에 접속하여 API KEY를 생성하길 바랍니다.
