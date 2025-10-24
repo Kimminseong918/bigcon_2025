@@ -1,7 +1,7 @@
 # -*- coding: utf-8 -*-
 from __future__ import annotations
 from pathlib import Path
-import io, os, json, datetime, textwrap, re  # ← re 추가
+import io, os, json, datetime, textwrap, re
 import numpy as np
 import pandas as pd
 import streamlit as st
@@ -29,20 +29,18 @@ OUT = ROOT / "outputs"
 OUT.mkdir(parents=True, exist_ok=True)  # outputs 폴더 보장
 
 # -------------------- Google Drive URL (secrets 우선, fallback 존재) --------------------
-# secrets.toml이 있으면 우선 사용, 없으면 기본값 사용
 try:
     PREDICTIONS_URL       = st.secrets["PREDICTIONS_URL"]
     PREDICTIONS_NAMED_URL = st.secrets["PREDICTIONS_NAMED_URL"]
     MERGED_URL            = st.secrets["MERGED_URL"]
-    ALERTS_URL            = st.secrets["ALERTS_URL"]        # signals_alerts_delta.csv
+    ALERTS_URL            = st.secrets["ALERTS_URL"]          # signals_alerts_delta.csv
     SIGREC_URL            = st.secrets.get("SIGREC_URL", "")  # (선택) signals_recent_delta.csv
 except Exception:
     PREDICTIONS_URL       = "https://drive.google.com/uc?id=1qInDALlRx25MlShIL4yT4GTiqO-qmSWd&export=download"
     PREDICTIONS_NAMED_URL = "https://drive.google.com/uc?id=1oDGLLAtPhvweruKWq2x9DTHC_LSyLG34&export=download"
     MERGED_URL            = "https://drive.google.com/uc?id=1-iPvmfHz3mjhRe95XEoB17Ja0S_zulJm&export=download"
-    # ✅ 사용자가 주신 alerts 드라이브 링크
     ALERTS_URL            = "https://drive.google.com/uc?id=1_WdKGUzAK1xaXlxTbpkCfDpyonYQGWBx&export=download"
-    SIGREC_URL            = ""  # 없으면 비워두기
+    SIGREC_URL            = ""
 
 # -------------------- 공통: Google Drive에서 파일 다운로드 --------------------
 def _extract_gdrive_id(url_or_id: str) -> str | None:
@@ -80,7 +78,7 @@ def ensure_outputs_files(out_dir: Path) -> None:
         "predictions_latest_both_delta_named.parquet": PREDICTIONS_NAMED_URL,
         "merged_indices_monthly.parquet":              MERGED_URL,
         "signals_alerts_delta.csv":                    ALERTS_URL,
-        "signals_recent_delta.csv":                    SIGREC_URL,  # 선택
+        "signals_recent_delta.csv":                    SIGREC_URL,
     }
     for fname, url in targets.items():
         if not url:
@@ -92,14 +90,27 @@ def ensure_outputs_files(out_dir: Path) -> None:
 # 실제 다운로드 수행
 ensure_outputs_files(OUT)
 
+# -------------------- 정책 파일 탐색 보완 --------------------
+def _resolve_policy_file() -> Path | None:
+    # 기본 이름
+    candidate = OUT / "정책지원관련매핑_251022.xlsx"
+    if candidate.exists():
+        return candidate
+    # outputs 폴더에서 "정책"과 "매핑"이 들어간 아무 xlsx 찾기 (이름이 약간 달라도 로딩)
+    xls = sorted([p for p in OUT.glob("*.xlsx") if ("정책" in p.name and "매핑" in p.name)])
+    if xls:
+        return xls[0]
+    return None
+
+POLICY_XLSX = _resolve_policy_file()
+
 # -------------------- 파일 경로 (다운로드 이후) --------------------
 named_candidate = OUT / "predictions_latest_both_delta_named.parquet"
 FILE_PRED   = named_candidate if named_candidate.exists() else (OUT / "predictions_latest_both_delta.parquet")
 FILE_MERGED = OUT / "merged_indices_monthly.parquet"
-FILE_MAPCSV = OUT / "big_data_set1_f.csv"          # (선택) 가맹점명 매핑 CSV가 있을 때만 사용
+FILE_MAPCSV = OUT / "big_data_set1_f.csv"          # (선택) 가맹점명 매핑 CSV
 FILE_ALERTS = OUT / "signals_alerts_delta.csv"     # (선택) 경고사유 텍스트
 FILE_SIGREC = OUT / "signals_recent_delta.csv"     # (선택) 지표 delta/gap 기반 설명
-POLICY_XLSX = OUT / "정책지원관련매핑_251022.xlsx"  # (선택)
 
 LOG_DIR = OUT / "ai_logs"; LOG_DIR.mkdir(parents=True, exist_ok=True)
 LOG_PATH = LOG_DIR / "ai_explanation_log.jsonl"
@@ -117,6 +128,20 @@ h1.app-title{ font-size: 32px; font-weight: 900; line-height: 1.36; margin: .1re
 .small{font-size:12px;opacity:.75}
 .caption-note{font-size:13px; opacity:.92;}
 .caption-list{font-size:13px; opacity:.92; padding-left:1.1rem}
+
+/* 공동구매 & 리워드 카드 스타일 */
+.card-stack { display: grid; row-gap: 12px; }
+.card { border-radius: 14px; padding: 16px 18px; border: 1px solid rgba(0,0,0,.06);
+        background: #fff; box-shadow: 0 2px 6px rgba(0,0,0,.04); }
+.card-title { font-weight: 700; margin-bottom: 6px; }
+.card-sub { font-size: 13.5px; opacity: .86; margin-bottom: 12px; }
+.card-badge { font-size: 12.5px; opacity: .8; }
+.btn { display:inline-block; padding:10px 14px; border-radius:10px; font-weight:800; text-align:center; }
+.btn-primary { background:#ea580c1a; border:1px solid #ea580c55; color:#b45309; }
+.btn-primary:hover{ background:#ea580c2a; }
+.btn-magenta { background:#db27771a; border:1px solid #db277755; color:#9d174d; }
+.btn-magenta:hover{ background:#db27772a; }
+.section-chip{font-weight:800;opacity:.9}
 </style>
 """, unsafe_allow_html=True)
 st.markdown("<h1 class='app-title'>😀 AI 기반 폐업 조기경보 플랫폼</h1>", unsafe_allow_html=True)
@@ -173,9 +198,11 @@ def load_sigrec() -> pd.DataFrame:
 
 @st.cache_data(show_spinner=False)
 def load_policy_map() -> pd.DataFrame:
-    if not POLICY_XLSX.exists(): return pd.DataFrame()
+    if POLICY_XLSX is None or not Path(POLICY_XLSX).exists(): 
+        return pd.DataFrame()
     try: df = pd.read_excel(POLICY_XLSX)
-    except Exception: df = pd.read_excel(POLICY_XLSX, engine="openpyxl")
+    except Exception: 
+        df = pd.read_excel(POLICY_XLSX, engine="openpyxl")
     colmap = {}
     for c in df.columns:
         cu = str(c).strip().lower()
@@ -499,21 +526,32 @@ with t_store:
     store_disp = str(sel_row_latest.get("MCT_NM", sel_id_str))
     st.markdown(f"#### 📍 선택 점포: **{store_disp}**")
 
+    # === 점수(%) 중심 상단 3칸 ===
     cA, cB, cC = st.columns(3)
     last = sdf.iloc[-1]
-    t3 = int(last.get("risk_label_3m", 0)); t6 = int(last.get("risk_label_6m", 0))
+    proba3 = float(last.get("risk_proba_3m", np.nan))
+    proba6 = float(last.get("risk_proba_6m", np.nan)) if "risk_proba_6m" in sdf.columns else np.nan
+
+    # 보조 등급 텍스트 (규칙: 3M=1 이면 고위험, 아니면 6M=1 이면 '위험', 둘다 0이면 '안정')
+    t3 = int(last.get("risk_label_3m", 0))
+    t6 = int(last.get("risk_label_6m", 0))
+    tier3 = "고위험" if t3==1 else "안정"
+    tier6 = "고위험" if t3==1 else ("위험" if t6==1 else "안정")
+
     with cA:
-        st.markdown(f"**3개월 등급**  \n"
-                    f"<span class='badge {'badge-red' if t3==1 else 'badge-emerald'}'>{'고위험' if t3==1 else '안정'}</span>",
-                    unsafe_allow_html=True)
+        st.metric("3개월 폐업 위험 점수", "N/A" if not np.isfinite(proba3) else f"{proba3*100:.1f}%")
+        st.markdown(f"<span class='small'>등급: {tier3}</span>", unsafe_allow_html=True)
     with cB:
-        tier6  = '고위험' if t3==1 else ('위험' if t6==1 else '안정')
-        color6 = 'badge-red' if tier6=='고위험' else ('badge-amber' if tier6=='위험' else 'badge-emerald')
-        st.markdown(f"**6개월 등급**  \n"
-                    f"<span class='badge {color6}'>{tier6}</span>", unsafe_allow_html=True)
+        st.metric("6개월 폐업 위험 점수", "N/A" if not np.isfinite(proba6) else f"{proba6*100:.1f}%")
+        st.markdown(f"<span class='small'>등급: {tier6}</span>", unsafe_allow_html=True)
     with cC:
-        r_now = float(last.get("risk_proba_3m", np.nan))
-        st.metric("폐업 위험 점수(현재, 3개월)", "N/A" if not np.isfinite(r_now) else f"{r_now*100:.1f}%")
+        sdf_local = sdf[["month","risk_proba_3m"]].dropna()
+        if len(sdf_local) >= 2:
+            w = 3 if len(sdf_local) >= 4 else (len(sdf_local)-1)
+            recent_delta = float(sdf_local["risk_proba_3m"].iloc[-1] - sdf_local["risk_proba_3m"].iloc[-(w+1)])
+            st.metric("최근 변화(3개월)", f"{recent_delta*100:+.1f}%p")
+        else:
+            st.metric("최근 변화(3개월)", "N/A")
 
     g1,g2 = st.columns(2)
     if {"month","risk_proba_3m"}.issubset(sdf.columns):
@@ -577,7 +615,7 @@ with t_store:
                        f"{lab} 상승(최근 3개월 Δ {d:+.2f}), 행정동·업종 동월 평균 대비 {g:+.2f}%p")
                 bullets.append(f"- {txt}")
 
-    # ✅ 폴백: alerts/sigrec 둘 다 없을 때도 자동 생성
+    # ✅ 폴백
     used_fallback = False
     if not bullets:
         if contrib_cols:
@@ -621,14 +659,14 @@ with t_store:
             w = 3 if len(sdf_local) >= 4 else (len(sdf_local)-1)
             recent_delta = float(sdf_local["risk_proba_3m"].iloc[-1] - sdf_local["risk_proba_3m"].iloc[-(w+1)])
         extra_metrics = {}
-        if np.isfinite(r_now): extra_metrics["위험확률_현재(3M)"] = f"{r_now*100:.1f}%"
+        if np.isfinite(proba3): extra_metrics["위험확률_현재(3M)"] = f"{proba3*100:.1f}%"
         if np.isfinite(recent_delta): extra_metrics["최근변화(3M)"] = f"{recent_delta*100:+.1f}%p"
 
         prompt = build_ai_prompt(
             store_name=store_name, store_id=sel_id_str,
             district=district, category=category,
             top_groups=top3_groups, reasons=bullets,
-            score_now=r_now if np.isfinite(r_now) else np.nan,
+            score_now=proba3 if np.isfinite(proba3) else np.nan,
             extra_metrics=extra_metrics,
         )
 
@@ -682,7 +720,12 @@ with t_policy:
     row_latest2 = cand2_latest[cand2_latest["store_id"].astype(str)==sel_id_str2].iloc[0]
     district = str(row_latest2.get("district","")); category = str(row_latest2.get("category",""))
     _last_line2 = pred[pred["store_id"].astype(str)==sel_id_str2].sort_values("month").iloc[-1]
-    risk_tier = str(_last_line2.get("risk_tier","안정"))
+    # risk_tier 없으면 레이블로 계산
+    if "risk_tier" in _last_line2.index:
+        risk_tier = str(_last_line2.get("risk_tier","안정"))
+    else:
+        _t3 = int(_last_line2.get("risk_label_3m",0)); _t6 = int(_last_line2.get("risk_label_6m",0))
+        risk_tier = "고위험" if _t3==1 else ("위험" if _t6==1 else "안정")
     st.session_state.update({"sel_store_id":sel_id_str2,"sel_district":district,"sel_category":category,"sel_risk_tier":risk_tier})
 
     sdf2 = pred[pred["store_id"].astype(str)==sel_id_str2].sort_values("month")
@@ -694,7 +737,7 @@ with t_policy:
     tabs = st.tabs(["정책 추천","금융/보험 제안","마케팅/고객확장","공동구매/원가절감"])
     if policy_map.empty:
         for t in tabs:
-            with t: st.info("정책 매핑 파일이 없어 데모 카드로 대체됩니다. `outputs/정책지원관련매핑_251022.xlsx` 를 준비하세요.")
+            with t: st.info("정책 매핑 파일이 없어 데모 카드로 대체됩니다. outputs 폴더의 정책 매핑 xlsx 파일명을 확인하세요.")
     else:
         def show_cards(df):
             if df.empty: st.info("추천 항목이 없습니다."); return
@@ -714,4 +757,37 @@ with t_policy:
         with tabs[0]: st.subheader("정부/지자체 정책 추천"); show_cards(policy_map[policy_map["support_type"].isin(["policy","grant","advisory","subsidy","gov","public"])])
         with tabs[1]: st.subheader("금융/보험 제안"); show_cards(policy_map[policy_map["support_type"].isin(["loan","credit","bnpl","insurance","fintech"])])
         with tabs[2]: st.subheader("마케팅/고객확장"); show_cards(policy_map[policy_map["support_type"].isin(["marketing","coupon","ad","growth"])])
-        with tabs[3]: st.subheader("공동구매/원가절감"); show_cards(policy_map[policy_map["support_type"].isin(["sourcing","procurement","costdown","rent"])])
+        with tabs[3]:
+            st.subheader("공동구매/원가절감")
+            show_cards(policy_map[policy_map["support_type"].isin(["sourcing","procurement","costdown","rent"])])
+
+            # === ⬇️ 이미지 참고한 '공동구매 & 리워드' 추가 카드 ===
+            st.markdown("#### <span class='section-chip'>공동구매 & 리워드</span>", unsafe_allow_html=True)
+            with st.container():
+                st.markdown("<div class='card-stack'>", unsafe_allow_html=True)
+
+                # 카드 1: 식자재 공동구매
+                st.markdown("""
+                <div class='card' style="background:#fffaf5;">
+                  <div class='card-title'>식자재 공동구매</div>
+                  <div class='card-sub'>개별 구매 대비 <b>15–25%</b> 절약</div>
+                  <div class='card-badge'>참여업체: <b>156개</b> · 다음 주문: <b>1/20</b></div>
+                  <div style="margin-top:12px;">
+                    <span class='btn btn-primary'>참여하기</span>
+                  </div>
+                </div>
+                """, unsafe_allow_html=True)
+
+                # 카드 2: 상생 리워드 프로그램
+                st.markdown("""
+                <div class='card' style="background:#fff7fb;">
+                  <div class='card-title'>상생 리워드 프로그램</div>
+                  <div class='card-sub'>고객 유지 시 포인트 적립</div>
+                  <div class='card-badge'>현재 적립: <b>12,500P</b> · <b>사용가능</b></div>
+                  <div style="margin-top:12px;">
+                    <span class='btn btn-magenta'>포인트 사용</span>
+                  </div>
+                </div>
+                """, unsafe_allow_html=True)
+
+                st.markdown("</div>", unsafe_allow_html=True)
