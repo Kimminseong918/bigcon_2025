@@ -762,32 +762,34 @@ with t_policy:
             show_cards(policy_map[policy_map["support_type"].isin(["sourcing","procurement","costdown","rent"])])
 
             # === ⬇️ 이미지 참고한 '공동구매 & 리워드' 추가 카드 ===
-            st.markdown("#### <span class='section-chip'>공동구매 & 리워드</span>", unsafe_allow_html=True)
-            with st.container():
-                st.markdown("<div class='card-stack'>", unsafe_allow_html=True)
+            # === 공동구매 & 리워드 (텍스트 설명형) ===
+            st.markdown("#### 공동구매 & 리워드")
+            
+            with st.container(border=True):
+                st.markdown(
+                    """
+            ##### 프로그램 구조
+            - **데이터 기반 매칭**: 위험상권·소상공인 데이터를 활용해 적합한 공급사를 자동 매칭
+            - **지자체·카드사 협업**: 성동구 × 신한카드와 함께 **식자재 공동구매** 운영  
+              · **고위험도 점포 우선 알림/선착순 기회 부여**
+            - **AI 공동구매 그룹**: 동일 업종·지역 점포를 묶어 **AI 기반 공동구매 그룹** 자동 구성
+            - **결제·포인트 연계**: 카드결제 및 제휴 포인트와 연동
+            
+            ##### 리워드(포인트) 정책
+            - **고객 유지·재방문 시 포인트 적립** (점포/카드사 공동 운영)
+            - **공동구매 결제 시 포인트 사용** 가능 (현금성 할인 효과)
+            - **제휴 포인트 통합**: 예) 신한포인트 등과 상호 전환/사용
+            
+            ##### 수익모델
+            - **거래 수수료**: B2B 판매액의 **1–2%**
+            - **프리미엄 공급사 등록비**: 상단 노출·입찰권 등 부가 혜택 포함
+            - **성과공유(성공보수)**: **비용절감액의 일정 비율**을 성공보수로 수취
+            
+            ##### 비즈니스 라인
+            - **공동구매·비용절감 (Shared Sourcing)**  
+              원재료·포장재·서비스를 공동구매하는 **B2B 상생 마켓플레이스** 구축  
+              · **판매수수료/플랫폼 거래 수익** · **협력업체 납품계약 수익**
+                    """,
+                    unsafe_allow_html=True,
+                )
 
-                # 카드 1: 식자재 공동구매
-                st.markdown("""
-                <div class='card' style="background:#fffaf5;">
-                  <div class='card-title'>식자재 공동구매</div>
-                  <div class='card-sub'>개별 구매 대비 <b>15–25%</b> 절약</div>
-                  <div class='card-badge'>참여업체: <b>156개</b> · 다음 주문: <b>1/20</b></div>
-                  <div style="margin-top:12px;">
-                    <span class='btn btn-primary'>참여하기</span>
-                  </div>
-                </div>
-                """, unsafe_allow_html=True)
-
-                # 카드 2: 상생 리워드 프로그램
-                st.markdown("""
-                <div class='card' style="background:#fff7fb;">
-                  <div class='card-title'>상생 리워드 프로그램</div>
-                  <div class='card-sub'>고객 유지 시 포인트 적립</div>
-                  <div class='card-badge'>현재 적립: <b>12,500P</b> · <b>사용가능</b></div>
-                  <div style="margin-top:12px;">
-                    <span class='btn btn-magenta'>포인트 사용</span>
-                  </div>
-                </div>
-                """, unsafe_allow_html=True)
-
-                st.markdown("</div>", unsafe_allow_html=True)
