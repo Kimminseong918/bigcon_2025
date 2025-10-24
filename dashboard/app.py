@@ -352,6 +352,30 @@ def build_ai_prompt(store_name: str, store_id: str, district: str, category: str
     """).strip()
 
     return system + "\n\n" + "\n".join(lines)
+def _polish_sentences(txt: str) -> list[str]:
+    raw = re.sub(r"[•·\u2022]+", " ", (txt or "")).strip()
+    # 마침표/물음표/느낌표 뒤 공백을 기준으로 문장 분리
+    parts = re.split(r"(?<=[.!?])\s+", raw)
+    parts = [p.strip(" -•·\t.") for p in parts if len(p.strip()) >= 3]
+
+    lively_added = False
+    fixed = []
+    for i, s in enumerate(parts):
+        # 단어 순화
+        s = (s.replace("악화","아쉬운 흐름")
+               .replace("급감","큰 조정")
+               .replace("감소","조정")
+               .replace("하락","조정")
+               .replace("문제","과제"))
+        # 문장부호 보정
+        if not s.endswith((".", "!", "?")):
+            s += "."
+        # 첫 문장만 가볍게 텐션 업
+        if (not lively_added) and i == 0 and s.endswith("."):
+            s = s[:-1] + "!"
+            lively_added = True
+        fixed.append(s)
+    return fixed[:3]
 
 def _save_ai_log(store_id: str, prompt: str, response: str, metrics: dict):
     LOG_DIR.mkdir(parents=True, exist_ok=True)
@@ -714,8 +738,21 @@ with t_store:
                 f"{drivers} 영향이 두드러지며 {extra_metrics.get('최근변화(3M)','±0.0%p')} 흐름이 확인됩니다. "
                 f"지금 바로 핵심 고객 유지 캠페인을 시작하고, 동종 업종 대비 취약 지표를 점검해 비용 구조를 최적화하세요."
             )
-
         st.markdown("**✨ AI 요약**")
+        
+        # (선택) 모델 실패/빈 응답 대비 백업 템플릿
+        if (not ai_text) or ai_text.startswith("[AI 설명 생성 실패]") or ai_text.startswith("[키 필요]") or ai_text.startswith("[설치 필요]"):
+            store_name = str(sel_row_latest.get("MCT_NM", sel_id_str))
+            _p = extra_metrics.get("위험확률_현재(3M)", "")
+            _d = extra_metrics.get("최근변화(3M)", "")
+            drivers = " · ".join(top3_groups) if top3_groups else "최근 지표"
+            ai_text = (
+                f"{store_name}의 현재 위험 확률은 {_p}입니다! "
+                f"{drivers} 영향이 두드러지며 {_d} 흐름이 관찰됩니다. "
+                f"지금 바로 핵심 고객 유지 캠페인을 실행하고, 동종 업종 대비 취약 지표를 점검해 비용 구조를 최적화하세요."
+            )
+        
+        # 문장 다듬기 → 문장형 목록 출력
         sentences = _polish_sentences(ai_text)
         if sentences:
             st.markdown(
@@ -726,6 +763,9 @@ with t_store:
             )
         else:
             st.caption("생성된 문장이 없습니다.")
+        
+        _save_ai_log(sel_id_str, prompt, ai_text, extra_metrics)
+
 
 
 #AI Policy Lab
@@ -834,4 +874,5 @@ with t_policy:
                     """,
                     unsafe_allow_html=True,
                 )
+
 
