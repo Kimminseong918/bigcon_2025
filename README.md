@@ -46,7 +46,7 @@ risk_lgbm_delta_6m.joblib: 6개월 예측 모델 파일
 
 5. 첨언
 모델을 실행하는 경우, 아래와 같은 requirements.txt를 이용하는 것을 권장합니다.
-[requirements.txt](https://github.com/user-attachments/files/23111524/requirements.txt)
+
 numpy==1.26.4
 pandas==2.2.2
 lightgbm==4.6.0
