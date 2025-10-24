@@ -54,7 +54,7 @@ risk_lgbm_delta_6m.joblib: 6개월 예측 모델 파일
 - pyarrow==15.0.2
 - scipy
 - joblib
-threadpoolctl
-python-dateutil
-pytz
-tzdata
+- threadpoolctl
+- python-dateutil
+- pytz
+- tzdata
