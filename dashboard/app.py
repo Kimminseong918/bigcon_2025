@@ -25,14 +25,14 @@ THIS = Path(__file__).resolve()
 APP_DIR = THIS.parent
 ROOT = APP_DIR.parent
 OUT = ROOT / "outputs"
-OUT.mkdir(parents=True, exist_ok=True) 
+OUT.mkdir(parents=True, exist_ok=True)
 #Google Drive URL-
 try:
     PREDICTIONS_URL       = st.secrets["PREDICTIONS_URL"]
     PREDICTIONS_NAMED_URL = st.secrets["PREDICTIONS_NAMED_URL"]
     MERGED_URL            = st.secrets["MERGED_URL"]
-    ALERTS_URL            = st.secrets["ALERTS_URL"]         
-    SIGREC_URL            = st.secrets.get("SIGREC_URL", "") 
+    ALERTS_URL            = st.secrets["ALERTS_URL"]
+    SIGREC_URL            = st.secrets.get("SIGREC_URL", "")
 except Exception:
     PREDICTIONS_URL       = "https://drive.google.com/uc?id=1qInDALlRx25MlShIL4yT4GTiqO-qmSWd&export=download"
     PREDICTIONS_NAMED_URL = "https://drive.google.com/uc?id=1oDGLLAtPhvweruKWq2x9DTHC_LSyLG34&export=download"
@@ -45,7 +45,7 @@ def _extract_gdrive_id(url_or_id: str) -> str | None:
     """id=… 또는 /d/…/ 형태 모두에서 파일ID 추출"""
     if not url_or_id:
         return None
-    if "/" not in url_or_id: 
+    if "/" not in url_or_id:
         return url_or_id
     m = re.search(r"(?:id=|/d/)([A-Za-z0-9_-]{20,})", url_or_id)
     return m.group(1) if m else None
@@ -103,9 +103,9 @@ POLICY_XLSX = _resolve_policy_file()
 named_candidate = OUT / "predictions_latest_both_delta_named.parquet"
 FILE_PRED   = named_candidate if named_candidate.exists() else (OUT / "predictions_latest_both_delta.parquet")
 FILE_MERGED = OUT / "merged_indices_monthly.parquet"
-FILE_MAPCSV = OUT / "big_data_set1_f.csv"        
-FILE_ALERTS = OUT / "signals_alerts_delta.csv"     
-FILE_SIGREC = OUT / "signals_recent_delta.csv"   
+FILE_MAPCSV = OUT / "big_data_set1_f.csv"
+FILE_ALERTS = OUT / "signals_alerts_delta.csv"
+FILE_SIGREC = OUT / "signals_recent_delta.csv"
 
 LOG_DIR = OUT / "ai_logs"; LOG_DIR.mkdir(parents=True, exist_ok=True)
 LOG_PATH = LOG_DIR / "ai_explanation_log.jsonl"
@@ -206,10 +206,10 @@ def load_sigrec() -> pd.DataFrame:
 
 @st.cache_data(show_spinner=False)
 def load_policy_map() -> pd.DataFrame:
-    if POLICY_XLSX is None or not Path(POLICY_XLSX).exists(): 
+    if POLICY_XLSX is None or not Path(POLICY_XLSX).exists():
         return pd.DataFrame()
     try: df = pd.read_excel(POLICY_XLSX)
-    except Exception: 
+    except Exception:
         df = pd.read_excel(POLICY_XLSX, engine="openpyxl")
     colmap = {}
     for c in df.columns:
@@ -314,7 +314,7 @@ def _describe_ts(months: pd.Series, values: pd.Series, scope_label: str) -> str:
         m_max, v_max = m.iloc[idx_max], float(v.iloc[idx_max]); m_min, v_min = m.iloc[idx_min], float(v.iloc[idx_min])
         def p(x): return f"{x*100:.1f}%"
         def sign_txt(x):
-            return f"상승(+{p(x)})" if x>0.0001 else (f"하락({p(x)})" if x<-0.0001 else "큰 변화 없음(±0.0%p)")
+            return f"상승(+{p(x)})" if x>0.0001 else (f"조정({p(x)})" if x<-0.0001 else "큰 변화 없음(±0.0%p)")
         return "".join([
             f"<div class='caption-note'><b>그래프 요약</b> — {scope_label}</div>",
             "<ul class='caption-list'>",
@@ -326,7 +326,7 @@ def _describe_ts(months: pd.Series, values: pd.Series, scope_label: str) -> str:
     except Exception:
         return f"<div class='caption-note'>· {scope_label}: 해석 생성 중 오류가 발생했습니다.</div>"
 
-#build_ai_prompt
+# ---------- AI 요약 프롬프트 ----------
 def build_ai_prompt(store_name: str, store_id: str, district: str, category: str,
                     top_groups: list[str], reasons: list[str], score_now: float,
                     extra_metrics: dict) -> str:
@@ -338,12 +338,19 @@ def build_ai_prompt(store_name: str, store_id: str, district: str, category: str
     if top_groups: lines.append("[영향 그룹 Top3] " + " · ".join(top_groups))
     if reasons: lines.append("[원인 신호] " + " / ".join([r.lstrip('- ').strip() for r in reasons]))
     if extra_metrics: lines.append("[요약 수치] " + " / ".join([f"{k}: {v}" for k,v in extra_metrics.items()]))
+
     system = textwrap.dedent("""
-    작업: 주어진 점포 위험요약을 2~3줄로 설명하세요.
-    - 왜 알림이 떴는지(핵심 원인)
-    - 지금 점포주가 할 일(CTA, 행동 1~2개)
-    문체: 간결, 실행지향, 숫자는 그대로 사용.
+    작업: 주어진 점포의 위험 요약을 **완성된 문장 2~3개**로 작성하세요.
+    형식:
+    1) 현재 상황 한 문장: 위험확률과 핵심 원인(영향 그룹/신호)을 자연스럽게 연결해 설명.
+    2) 변화 한 문장: 최근 수치 변화(있으면)와 의미를 짧게.
+    3) 액션 한 문장: 지금 바로 할 1–2가지 구체 행동(동사 시작, 점주 시점, 간결).
+    톤 & 제약:
+    - 활기차고 격려하는 전문 톤, 능동태, 현재형. 과한 불안 조성 금지.
+    - 숫자·지표명은 입력 그대로 유지. 불필요한 반복/수식어 최소화.
+    - 전체 55단어 이내, 과도한 이모지 금지(최대 1개), 줄바꿈/목록 없이 문장만.
     """).strip()
+
     return system + "\n\n" + "\n".join(lines)
 
 def _save_ai_log(store_id: str, prompt: str, response: str, metrics: dict):
@@ -410,6 +417,26 @@ def _gemini_generate(prompt: str) -> str:
         return (resp.text or "").strip() or "[AI 설명 생성 실패] 응답이 비었습니다."
     except Exception as e:
         return f"[AI 설명 생성 오류] {e}"
+
+# -------------------- 문장 다듬기 유틸 --------------------
+def _polish_sentences(txt: str) -> list[str]:
+    # 1) 불필요 기호 제거 & 문장 단위로 분리
+    raw = re.sub(r"[•·\u2022]+", " ", (txt or "")).strip()
+    parts = re.split(r"(?<=[.!?])\s+|\n+", raw)
+    # 2) 공백/짧은 토막 제거
+    parts = [p.strip(" -•·\t.") for p in parts if len(p.strip()) >= 3]
+    # 3) 문장 끝 마침표 보정 + 첫 문장만 느낌표로 활기 추가
+    lively_added = False
+    fixed = []
+    for i, s in enumerate(parts):
+        s = s.replace("악화", "아쉬운 흐름").replace("급감", "큰 조정").replace("감소", "조정").replace("하락", "조정").replace("문제", "과제")
+        if not s.endswith((".", "!", "?")):
+            s += "."
+        if (not lively_added) and i == 0 and s.endswith("."):
+            s = s[:-1] + "!"
+            lively_added = True
+        fixed.append(s)
+    return fixed[:3]  # 최대 3문장만
 
 #탭
 t_overview, t_map, t_store, t_policy = st.tabs(
@@ -539,7 +566,7 @@ with t_store:
     proba3 = float(last.get("risk_proba_3m", np.nan))
     proba6 = float(last.get("risk_proba_6m", np.nan)) if "risk_proba_6m" in sdf.columns else np.nan
 
-    #보조 등급 텍스트 (규칙: 3M=1 이면 고위험, 아니면 6M=1 이면 '위험', 둘다 0이면 '안정')
+    #보조 등급 텍스트
     t3 = int(last.get("risk_label_3m", 0))
     t6 = int(last.get("risk_label_6m", 0))
     tier3 = "고위험" if t3==1 else "안정"
@@ -678,14 +705,28 @@ with t_store:
         with st.spinner("AI가 점포 상황을 정리하는 중입니다..."):
             ai_text = _friendly_tone(_gemini_generate(prompt))
 
+        # 백업 템플릿 (모델이 빈 응답/오류일 때)
+        if (not ai_text) or ai_text.startswith("[AI 설명 생성 실패") or ai_text.startswith("[키 필요]") or ai_text.startswith("[설치 필요]") or ai_text.startswith("[AI 설명 생성 오류"):
+            drivers = " · ".join(top3_groups) if top3_groups else "최근 지표"
+            reasons_txt = " ".join([r.lstrip('- ').strip() for r in bullets]) if bullets else ""
+            ai_text = (
+                f"{store_name}의 현재 3개월 위험 확률은 {extra_metrics.get('위험확률_현재(3M)','-')}입니다! "
+                f"{drivers} 영향이 두드러지며 {extra_metrics.get('최근변화(3M)','±0.0%p')} 흐름이 확인됩니다. "
+                f"지금 바로 핵심 고객 유지 캠페인을 시작하고, 동종 업종 대비 취약 지표를 점검해 비용 구조를 최적화하세요."
+            )
+
         st.markdown("**✨ AI 요약**")
-        parts = [s.strip(" -•·\t.") for s in ai_text.replace("•","\n").replace("·","\n").split("\n") if s.strip(" -•·\t.")]
-        items = parts[:3]
-        if items:
-            st.markdown("<ul style='margin-top:0.4rem; line-height:1.6;'>"+ "".join(f"<li>{it}</li>" for it in items)+"</ul>", unsafe_allow_html=True)
+        sentences = _polish_sentences(ai_text)
+        if sentences:
+            st.markdown(
+                "<ul style='margin-top:0.4rem; line-height:1.6;'>"
+                + "".join(f"<li>{s}</li>" for s in sentences)
+                + "</ul>",
+                unsafe_allow_html=True
+            )
         else:
             st.caption("생성된 문장이 없습니다.")
-        _save_ai_log(sel_id_str, prompt, ai_text, extra_metrics)
+
 
 #AI Policy Lab
 with t_policy:
@@ -793,3 +834,4 @@ with t_policy:
                     """,
                     unsafe_allow_html=True,
                 )
+
