@@ -142,6 +142,19 @@ h1.app-title{ font-size: 32px; font-weight: 900; line-height: 1.36; margin: .1re
 st.markdown("<h1 class='app-title'>😀 AI 기반 폐업 조기경보 플랫폼</h1>", unsafe_allow_html=True)
 st.caption("AI 기반 폐업위험 예측 및 맞춤형 지원 시스템")
 
+# === Gemini 전역 입력(UI) : 사이드바에서 단 한 번만 생성 ===
+try:
+    _secret_key = st.secrets.get("GEMINI_API_KEY", None)
+except Exception:
+    _secret_key = None
+if "GEMINI_API_KEY" not in st.session_state:
+    st.session_state["GEMINI_API_KEY"] = _secret_key or os.getenv("GEMINI_API_KEY") or ""
+with st.sidebar.expander("🔐 Gemini 설정", expanded=False):
+    _k_in = st.text_input("Gemini API 키", type="password", key="__GEMINI_API_KEY_INPUT__", placeholder="AIza...")
+    if _k_in:
+        st.session_state["GEMINI_API_KEY"] = _k_in.strip()
+        st.success("세션에 저장되었습니다.")
+
 #로딩 유틸
 def _try_read_csv(path: Path) -> pd.DataFrame:
     for enc in ("cp949", "euc-kr", "utf-8"):
@@ -343,17 +356,17 @@ def _save_ai_log(store_id: str, prompt: str, response: str, metrics: dict):
 
 #Gemini 키/모델
 def _get_gemini_key_from_user() -> str | None:
+    # 위젯 생성 없이 읽기만 (중복 위젯 방지)
     key = None
     try:
-        if hasattr(st, "secrets"): key = st.secrets.get("GEMINI_API_KEY", None)
-    except StreamlitSecretNotFoundError: key = None
-    if not key: key = os.getenv("GEMINI_API_KEY")
-    if not key: key = st.session_state.get("GEMINI_API_KEY")
+        if hasattr(st, "secrets"):
+            key = st.secrets.get("GEMINI_API_KEY", None)
+    except StreamlitSecretNotFoundError:
+        key = None
     if not key:
-        with st.popover("🔐 Gemini API 키 입력", use_container_width=True):
-            st.caption("· 권장: .streamlit/secrets.toml 또는 환경변수 사용", unsafe_allow_html=True)
-            _k = st.text_input("GEMINI_API_KEY", type="password", placeholder="AIza...", label_visibility="collapsed")
-            if _k: st.session_state["GEMINI_API_KEY"] = key = _k.strip(); st.success("키가 세션에 저장되었습니다.")
+        key = os.getenv("GEMINI_API_KEY")
+    if not key:
+        key = st.session_state.get("GEMINI_API_KEY")
     return key
 
 def _list_models_safe():
@@ -389,7 +402,7 @@ def _pick_gemini_model() -> str:
 def _gemini_generate(prompt: str) -> str:
     key = _get_gemini_key_from_user()
     if not _HAS_GEMINI: return "[설치 필요] pip install google-generativeai"
-    if not key: return "[키 필요] 오른쪽 상단 '🔐 Gemini API 키 입력'에서 키를 넣어주세요."
+    if not key: return "[키 필요] 오른쪽 사이드바에서 Gemini API 키를 입력하세요."
     try:
         genai.configure(api_key=key)
         model = genai.GenerativeModel(model_name=_pick_gemini_model())
@@ -780,6 +793,3 @@ with t_policy:
                     """,
                     unsafe_allow_html=True,
                 )
-
-
-
